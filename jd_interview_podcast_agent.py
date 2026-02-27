@@ -1,11 +1,11 @@
 import os
 import streamlit as st
-from agno.agent import Agent
-from agno.models.openai import OpenAIChat
-from agno.run.agent import RunOutput
+from groq import Groq
+from gtts import gTTS
 from elevenlabs import ElevenLabs
+import tempfile
 
-# ------------------ Streamlit UI Setup ------------------
+# ------------------ Streamlit Setup ------------------
 
 st.set_page_config(
     page_title="🎙️ JD → Interview Prep Podcast Agent",
@@ -15,18 +15,20 @@ st.set_page_config(
 
 st.title("🎙️ Job Description → Interview Prep Podcast Agent")
 st.write(
-    "Convert any job description into **audio-based interview preparation**, "
-    "including likely questions, answer guidance, and skill gap alerts."
+    "Convert job descriptions into audio-based interview preparation "
+    "with questions, answer guidance, and skill gap alerts."
 )
 
 # ------------------ Sidebar: API Keys ------------------
 
 st.sidebar.header("🔑 API Keys")
 
-openai_key = st.sidebar.text_input("OpenAI API Key", type="password")
-elevenlabs_key = st.sidebar.text_input("ElevenLabs API Key", type="password")
+groq_api_key = st.sidebar.text_input("Groq API Key", type="password")
+elevenlabs_key = st.sidebar.text_input(
+    "ElevenLabs API Key (optional)", type="password"
+)
 
-# ------------------ User Inputs ------------------
+# ------------------ Inputs ------------------
 
 jd_text = st.text_area(
     "📄 Paste Job Description",
@@ -51,37 +53,22 @@ audio_length = st.selectbox(
 
 generate_btn = st.button(
     "🎧 Generate Interview Podcast",
-    disabled=not all([openai_key, elevenlabs_key, jd_text.strip()])
+    disabled=not all([groq_api_key, jd_text.strip()])
 )
 
 # ------------------ Main Logic ------------------
 
 if generate_btn:
-    with st.spinner("Analyzing JD and generating interview podcast..."):
+    with st.spinner("Generating interview podcast..."):
         try:
-            # Set environment variables
-            os.environ["OPENAI_API_KEY"] = openai_key
-
-            # ------------------ Agent Setup ------------------
-
-            agent = Agent(
-                name="JD Interview Prep Agent",
-                model=OpenAIChat(id="gpt-4o"),
-                instructions=[
-                    "You are an expert interview coach.",
-                    "Analyze the given job description carefully.",
-                    "Extract key skills, tools, and responsibilities.",
-                    "Generate likely interview questions based on the interview round.",
-                    "Provide high-level answer guidance in simple spoken language.",
-                    "Identify missing or weak skills and report them as skill gaps.",
-                    "The output must be conversational and suitable for audio.",
-                    "Do NOT use markdown, bullet symbols, or emojis in the response."
-                ],
-            )
-
-            # ------------------ Agent Prompt ------------------
+            # ---------- Groq LLM ----------
+            client = Groq(api_key=groq_api_key)
 
             prompt = f"""
+You are an expert interview coach.
+
+Analyze the following job description and generate spoken interview preparation.
+
 Job Description:
 {jd_text}
 
@@ -89,51 +76,71 @@ Interview Round: {round_type}
 Experience Level: {experience_level}
 Preferred Audio Length: {audio_length}
 
-Generate:
-1. A short role overview
-2. 5 likely interview questions
-3. High-level answer guidance for each question
-4. Skill gap alert: skills that candidates often miss for this role
+Include:
+1. Brief role overview
+2. Five likely interview questions
+3. High-level answer guidance
+4. Skill gap alerts (commonly expected but missing skills)
+
+Use simple conversational language suitable for audio.
+Do not use markdown, bullets, or emojis.
 """
 
-            response: RunOutput = agent.run(prompt)
-            interview_script = response.content
-
-            if not interview_script:
-                st.error("Failed to generate interview content.")
-                st.stop()
-
-            # ------------------ ElevenLabs Audio Generation ------------------
-
-            eleven_client = ElevenLabs(api_key=elevenlabs_key)
-
-            audio_stream = eleven_client.text_to_speech.convert(
-                text=interview_script,
-                voice_id="JBFqnCBsd6RMkjVDRZzb",
-                model_id="eleven_multilingual_v2"
+            response = client.chat.completions.create(
+                model="llama3-8b-8192",
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.4,
+                max_tokens=900,
             )
 
-            audio_chunks = []
-            for chunk in audio_stream:
-                if chunk:
-                    audio_chunks.append(chunk)
+            interview_script = response.choices[0].message.content
 
-            audio_bytes = b"".join(audio_chunks)
+            # ---------- TTS ----------
+            audio_bytes = None
+            tts_used = None
 
-            # ------------------ Output ------------------
+            # Try ElevenLabs first (optional)
+            if elevenlabs_key:
+                try:
+                    eleven = ElevenLabs(api_key=elevenlabs_key)
+                    audio_stream = eleven.text_to_speech.convert(
+                        text=interview_script,
+                        voice_id="JBFqnCBsd6RMkjVDRZzb",
+                        model_id="eleven_multilingual_v2"
+                    )
 
-            st.success("🎉 Interview Prep Podcast Generated!")
+                    chunks = []
+                    for chunk in audio_stream:
+                        if chunk:
+                            chunks.append(chunk)
+                    audio_bytes = b"".join(chunks)
+                    tts_used = "ElevenLabs"
+
+                except Exception:
+                    audio_bytes = None
+
+            # Fallback: Google gTTS (FREE)
+            if audio_bytes is None:
+                tts = gTTS(text=interview_script)
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as fp:
+                    tts.save(fp.name)
+                    with open(fp.name, "rb") as f:
+                        audio_bytes = f.read()
+                tts_used = "Google gTTS (Free)"
+
+            # ---------- Output ----------
+            st.success(f"🎉 Podcast generated using {tts_used}")
             st.audio(audio_bytes, format="audio/mp3")
 
             st.download_button(
-                label="⬇️ Download Podcast",
-                data=audio_bytes,
-                file_name="interview_prep_podcast.mp3",
-                mime="audio/mp3"
+                "⬇️ Download Podcast",
+                audio_bytes,
+                "interview_prep_podcast.mp3",
+                "audio/mp3"
             )
 
             with st.expander("📄 Generated Interview Script"):
                 st.write(interview_script)
 
         except Exception as e:
-            st.error(f"Something went wrong: {e}")
+            st.error(f"Error: {e}")
