@@ -34,7 +34,7 @@ A GenAI-powered agent that converts job descriptions into **audio-based intervie
 ### 1. Clone the Repository
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/jd-interview-podcast-agent.git
+git clone https://github.com/Archana955/jd-interview-podcast-agent.git
 cd jd-interview-podcast-agent
 ```
 
